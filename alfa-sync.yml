@@ -1,0 +1,38 @@
+name: Booster Care - Alfa CRM sync
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: booster-care-alfa-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Refresh student directory
+        env:
+          CARE_SITE_URL: ${{ vars.CARE_SITE_URL }}
+          CARE_SYNC_SECRET: ${{ secrets.CARE_SYNC_SECRET }}
+          CARE_SITES_BYPASS_TOKEN: ${{ secrets.CARE_SITES_BYPASS_TOKEN }}
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          const {CARE_SITE_URL,CARE_SYNC_SECRET,CARE_SITES_BYPASS_TOKEN}=process.env;
+          if(!CARE_SITE_URL||!CARE_SYNC_SECRET||!CARE_SITES_BYPASS_TOKEN){console.log('Scheduler setup is pending. No request sent.');process.exit(0);}
+          const base=new URL(CARE_SITE_URL);
+          if(base.protocol!=='https:'||!base.hostname.endsWith('.chatgpt.site')||base.username||base.password||base.port)throw new Error('Invalid Site URL');
+          const pause=ms=>new Promise(r=>setTimeout(r,ms));
+          let busy=0;
+          for(let page=0;page<600;page++){
+            const response=await fetch(new URL('/api/alfa-sync',base),{method:'POST',redirect:'error',headers:{'Content-Type':'application/json','Authorization':'Bearer '+CARE_SYNC_SECRET,'OAI-Sites-Authorization':'Bearer '+CARE_SITES_BYPASS_TOKEN},body:'{}',signal:AbortSignal.timeout(65000)});
+            if(response.status===429&&busy++<10){await pause(6000);page--;continue;}
+            if(!response.ok)throw new Error('Student synchronization failed: HTTP '+response.status+'. Check Integrations in Booster Care.');
+            const result=await response.json();
+            if(result.done){console.log(result.skipped?'No changes needed: '+result.skipped:'Synchronization completed. Active students: '+result.count);process.exit(0);}
+            await pause(400);
+          }
+          console.log('Progress checkpoint saved. The next scheduled run will continue.');
+          NODE
